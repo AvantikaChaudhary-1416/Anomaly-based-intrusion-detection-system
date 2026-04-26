@@ -4,9 +4,7 @@ import socket
 import datetime
 import time
 
-# -------------------- Data Structures --------------------
 
-# Short-term (5 sec)
 port_set_tcp = defaultdict(lambda: defaultdict(int))
 port_set_udp = defaultdict(set)
 
@@ -20,20 +18,16 @@ fin_count = defaultdict(int)
 xmas_count = defaultdict(int)
 null_flags_exist = defaultdict(int)
 
-# Long-term (60 sec)
 cumulative_port_tcp = defaultdict(set)
 cumulative_port_udp = defaultdict(set)
 
-# Scores
 score = defaultdict(int)
 cumulative_score = defaultdict(int)
 inactive_windows = defaultdict(int)
 
-# Blocklist
 blocklist = set()
 blocklist_reasons = {}
 
-# -------------------- Thresholds --------------------
 
 SMALL_ALERT_THRESHOLD = 20
 CUMULATIVE_ALERT_THRESHOLD = 100
@@ -50,7 +44,6 @@ NULL_SCAN_RATIO = 0.6
 UDP_FLOOD_THRESHOLD = 50
 ICMP_FLOOD_THRESHOLD = 50
 
-# -------------------- Time Windows --------------------
 
 small_window = 5
 slow_window = 60
@@ -58,12 +51,10 @@ slow_window = 60
 small_time = time.time()
 slow_time = time.time()
 
-# -------------------- Log Files --------------------
 
 SUSPICIOUS_LOG = "suspicious.log"
 CONFIRMED_LOG = "confirmed.log"
 
-# -------------------- Utility --------------------
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -100,7 +91,6 @@ def log_confirmed(ip, labels, ip_score):
     with open(CONFIRMED_LOG, "a") as f:
         f.write(line)
 
-# -------------------- Detection --------------------
 
 def find_max_port(ip):
     if not port_set_tcp[ip]:
@@ -159,7 +149,6 @@ def detect_icmp(ip):
         return "ICMP flood"
     return None
 
-# -------------------- Evaluation --------------------
 
 def evaluate_ip(ip):
     labels = []
@@ -179,7 +168,6 @@ def evaluate_ip(ip):
 
     return ip_score, labels
 
-# -------------------- Windows --------------------
 
 def check_small_window():
     all_ips = set(
@@ -225,7 +213,6 @@ def check_slow_window():
             log_confirmed(ip, "Long-term suspicious behavior", cumulative_score[ip])
 
 
-        # decay
         inactive_windows[ip] = min(inactive_windows[ip], 5)
 
         if inactive_windows[ip] < 3:
@@ -235,12 +222,10 @@ def check_slow_window():
         else:
             cumulative_score[ip] = int(cumulative_score[ip] * 0.85)
 
-        # memory cleanup
         if cumulative_score[ip] <= 0 and ip not in blocklist:
             del cumulative_score[ip]
             inactive_windows.pop(ip, None)
 
-# -------------------- Packet Capture --------------------
 
 def catchpacket(packet):
     global small_time, slow_time, my_host
@@ -286,7 +271,6 @@ def catchpacket(packet):
         if packet.haslayer(ICMP) and dst_ip == my_host and packet[ICMP].type == 8:
             packet_count_icmp[src_ip] += 1
 
-    # -------- Time Windows --------
 
     if time.time() - small_time > small_window:
         check_small_window()
@@ -313,7 +297,6 @@ def catchpacket(packet):
 
         slow_time = time.time()
 
-# -------------------- Start --------------------
 
 print("📡 IDS Running...")
 print(f"   Monitoring host: {my_host}")
