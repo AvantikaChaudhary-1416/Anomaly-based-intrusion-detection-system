@@ -2,59 +2,99 @@ from scapy.all import *
 from collections import defaultdict
 import socket
 import datetime
+import json
 import time
+import tracemalloc
+
+tracemalloc.start()
+
+PROFILES = {
+    "server": {
+        "syn_floor":  500,
+        "udp_floor":  300,
+        "icmp_floor": 200,
+        "K":          4.0,
+    },
+    "workstation": {
+        "syn_floor":  150,
+        "udp_floor":  80,
+        "icmp_floor": 60,
+        "K":          3.0,
+    },
+    "home_iot": {
+        "syn_floor":  30,
+        "udp_floor":  20,
+        "icmp_floor": 15,
+        "K":          2.5,
+    },
+}
+
+ACTIVE_PROFILE = "workstation"
+PROFILE        = PROFILES[ACTIVE_PROFILE]
 
 
-port_set_tcp = defaultdict(lambda: defaultdict(int))
-port_set_udp = defaultdict(set)
+EMA_ALPHA = 0.4
 
-packet_count_tcp = defaultdict(int)
-packet_count_udp = defaultdict(int)
-packet_count_icmp = defaultdict(int)
 
-syn_count = defaultdict(int)
-ack_count = defaultdict(int)
-fin_count = defaultdict(int)
-xmas_count = defaultdict(int)
-null_flags_exist = defaultdict(int)
+KNOWN_PORTS = {
+    20, 21, 22, 23, 25, 53, 67, 68,
+    80, 110, 143, 161, 162, 179, 194,
+    389, 443, 445, 465, 500, 514, 515,
+    554, 587, 631, 636, 873, 993, 995,
+    1080, 1194, 1433, 1434, 1521, 1723,
+    3306, 3389, 5432, 5900, 6379,
+    8080, 8443, 8888, 9200, 9300, 27017,
+}
 
-cumulative_port_tcp = defaultdict(set)
-cumulative_port_udp = defaultdict(set)
+UNCOMMON_PORT_THRESHOLD = 6   # flag if uncommon port hits cross this
 
-score = defaultdict(int)
-cumulative_score = defaultdict(int)
-inactive_windows = defaultdict(int)
 
-blocklist = set()
+INACTIVITY_TIMEOUT = 8 * 60   # 8 minutes in seconds
+
+BASELINE_FILE = "baseline.json"
+ 
+def load_baseline():
+    try:
+        with open(BASELINE_FILE) as f:
+            b = json.load(f)
+        print(f"   Baseline loaded — "
+              f"SYN: {b['syn']} | UDP: {b['udp']} | ICMP: {b['icmp']}")
+        return b
+    except FileNotFoundError:
+        print(f"   WARNING: {BASELINE_FILE} not found.")
+        print(f"   Run baseline_capture.py during peak traffic first.")
+        print(f"   Falling back to threshold floor only.\n")
+        return None
+
+baseline = load_baseline()
+
+def get_baseline(signal):
+    if baseline is None:
+        return None
+    return baseline.get(signal, None)
+
+ema_syn  = defaultdict(float)
+ema_udp  = defaultdict(float)
+ema_icmp = defaultdict(float)
+
+count_syn  = defaultdict(int)
+count_udp  = defaultdict(int)
+count_icmp = defaultdict(int)
+
+uncommon_port_count = defaultdict(int)
+
+last_seen = defaultdict(float)
+
+blocklist         = set()
 blocklist_reasons = {}
 
 
-SMALL_ALERT_THRESHOLD = 20
-CUMULATIVE_ALERT_THRESHOLD = 100
-PORT_SCAN_THRESHOLD = 15
-SLOW_SCAN_THRESHOLD = 25
-
-SYN_COUNT_THRESHOLD = 100
-SYN_FLOOD_THRESHOLD = 2000
-FIN_COUNT_THRESHOLD = 200
-XMAS_COUNT_THRESHOLD = 200
-ACK_COUNT_THRESHOLD = 300
-NULL_SCAN_RATIO = 0.6
-
-UDP_FLOOD_THRESHOLD = 50
-ICMP_FLOOD_THRESHOLD = 50
-
-
-small_window = 5
-slow_window = 60
-
-small_time = time.time()
-slow_time = time.time()
+SMALL_WINDOW = 5   # seconds — EMA update + flood detection
+small_time   = time.time()
 
 
 SUSPICIOUS_LOG = "suspicious.log"
-CONFIRMED_LOG = "confirmed.log"
-
+CONFIRMED_LOG  = "confirmed.log"
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -62,249 +102,213 @@ def get_local_ip():
         s.connect(("8.8.8.8", 80))
         return s.getsockname()[0]
     except Exception:
-        return None
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except:
+            return None
     finally:
         s.close()
 
 my_host = get_local_ip()
 
-def get_severity(val):
-    if val >= 80:
-        return "HIGH"
-    elif val >= 40:
-        return "MEDIUM"
+def get_severity(ema_val, floor):
+    if ema_val >= floor * 3:  return "HIGH"
+    if ema_val >= floor * 1.5: return "MEDIUM"
     return "LOW"
 
-def log_suspicious(ip, labels, ip_score):
-    severity = get_severity(ip_score)
+def log_event(level, ip, attack_type, detail=""):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{timestamp}] SUSPICIOUS | {severity} | IP: {ip} | Type: {labels} | Score: {ip_score}\n"
+    line = (
+        f"[{timestamp}] {level} | "
+        f"IP: {ip} | Profile: {ACTIVE_PROFILE} | "
+        f"Type: {attack_type}"
+        + (f" | {detail}" if detail else "") + "\n"
+    )
     print(line, end="")
-    with open(SUSPICIOUS_LOG, "a") as f:
-        f.write(line)
-
-def log_confirmed(ip, labels, ip_score):
-    severity = get_severity(ip_score)
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{timestamp}] CONFIRMED | {severity} | IP: {ip} | Type: {labels} | Score: {ip_score}\n"
-    print(line, end="")
-    with open(CONFIRMED_LOG, "a") as f:
+    log_file = CONFIRMED_LOG if level == "BLOCKED" else SUSPICIOUS_LOG
+    with open(log_file, "a") as f:
         f.write(line)
 
 
-def find_max_port(ip):
-    if not port_set_tcp[ip]:
-        return None
-    return max(port_set_tcp[ip], key=port_set_tcp[ip].get)
+def all_dicts():
+    return [
+        ema_syn, ema_udp, ema_icmp,
+        count_syn, count_udp, count_icmp,
+        uncommon_port_count,
+        last_seen,
+    ]
 
-def detect_syn(ip):
-    syn = syn_count[ip]
-    ack = ack_count[ip]
-    ratio = syn / (syn + ack + 0.001)
-    unique_ports = len(port_set_tcp[ip])
+def purge_ip(ip):
+    """Remove IP from all tracking structures."""
+    for d in all_dicts():
+        d.pop(ip, None)
 
-    if syn > SYN_FLOOD_THRESHOLD and ratio > 0.9:
-        if unique_ports <= 3:
-            port = find_max_port(ip)
-            return f"SYN flood (port {port})"
-        return "SYN flood"
-
-
-    if syn > SYN_COUNT_THRESHOLD and ratio > 0.7:
-        if unique_ports <= 3:
-            port = find_max_port(ip)
-            return f"SYN probing (port {port})"
-        return "SYN scan"
-
-    return None
-
-def detect_tcp_scan(ip):
-    if len(port_set_tcp[ip]) > PORT_SCAN_THRESHOLD:
-        return "TCP port scan"
-    return None
-
-def detect_flag_scan(ip):
-    if xmas_count[ip] > XMAS_COUNT_THRESHOLD:
-        return "XMAS scan"
-    if fin_count[ip] > FIN_COUNT_THRESHOLD:
-        return "FIN scan"
-    if ack_count[ip] > ACK_COUNT_THRESHOLD:
-        return "ACK scan"
-    if packet_count_tcp[ip] > 0 and (null_flags_exist[ip] / (packet_count_tcp[ip] + 0.01)) > NULL_SCAN_RATIO:
-        return "NULL scan"
-    return None
-
-def detect_udp(ip):
-    ports = len(port_set_udp[ip])
-    total = packet_count_udp[ip]
-
-    if ports > PORT_SCAN_THRESHOLD:
-        return "UDP scan"
-    if total > UDP_FLOOD_THRESHOLD and ports <= 3:
-        return "UDP flood"
-    return None
-
-def detect_icmp(ip):
-    if packet_count_icmp[ip] > ICMP_FLOOD_THRESHOLD:
-        return "ICMP flood"
-    return None
+def blocklist_ip(ip, reason, detail=""):
+    blocklist.add(ip)
+    blocklist_reasons[ip] = reason
+    purge_ip(ip)
+    log_event("BLOCKED", ip, reason, detail)
 
 
-def evaluate_ip(ip):
-    labels = []
-    ip_score = 0
+def update_ema(old_ema, new_count):
+    return EMA_ALPHA * new_count + (1 - EMA_ALPHA) * old_ema
 
-    for fn, weight in [
-        (detect_syn, 30),
-        (detect_tcp_scan, 20),
-        (detect_flag_scan, 20),
-        (detect_udp, 20),
-        (detect_icmp, 20),
-    ]:
-        res = fn(ip)
-        if res:
-            labels.append(res)
-            ip_score += weight
+def is_anomalous(ema_val, signal_name, floor):
+    if ema_val >= floor:
+        return True
+    b = get_baseline(signal_name)
+    if b is not None and b > 0:
+        if ema_val > b * PROFILE["K"]:
+            return True
+    return False
 
-    return ip_score, labels
+def detect_floods(ip):
+    findings = []
+    p = PROFILE
+
+    if is_anomalous(ema_syn[ip], "syn", p["syn_floor"]):
+        findings.append((
+            "SYN flood",
+            f"EMA={ema_syn[ip]:.1f} floor={p['syn_floor']}"
+        ))
+
+    if is_anomalous(ema_udp[ip], "udp", p["udp_floor"]):
+        findings.append((
+            "UDP flood",
+            f"EMA={ema_udp[ip]:.1f} floor={p['udp_floor']}"
+        ))
+
+    if is_anomalous(ema_icmp[ip], "icmp", p["icmp_floor"]):
+        findings.append((
+            "ICMP flood",
+            f"EMA={ema_icmp[ip]:.1f} floor={p['icmp_floor']}"
+        ))
+
+    return findings
 
 
 def check_small_window():
+    now = time.time()
+
     all_ips = set(
-        list(packet_count_tcp.keys()) +
-        list(packet_count_udp.keys()) +
-        list(packet_count_icmp.keys())
+        list(count_syn.keys()) +
+        list(count_udp.keys()) +
+        list(count_icmp.keys())
     )
 
     for ip in all_ips:
-
         if ip in blocklist:
             continue
 
-        ip_score, labels = evaluate_ip(ip)
+        ema_syn[ip]  = update_ema(ema_syn[ip],  count_syn[ip])
+        ema_udp[ip]  = update_ema(ema_udp[ip],  count_udp[ip])
+        ema_icmp[ip] = update_ema(ema_icmp[ip], count_icmp[ip])
 
-        if ip_score > 0:
-            score[ip] = ip_score
-            cumulative_score[ip] += ip_score
-            inactive_windows[ip] = 0
-        else:
-            inactive_windows[ip] += 1
+        findings = detect_floods(ip)
+        if findings:
+            labels  = [label  for label, _      in findings]
+            details = [detail for _,     detail in findings]
+            blocklist_ip(ip, labels, " | ".join(details))
 
-        if score[ip] >= SMALL_ALERT_THRESHOLD:
-            log_suspicious(ip, labels, score[ip])
-
-def check_slow_window():
-    for ip in list(cumulative_score.keys()):
-        
+    for ip in list(last_seen.keys()):
         if ip in blocklist:
             continue
+        if now - last_seen[ip] > INACTIVITY_TIMEOUT:
+            purge_ip(ip)
 
-        if len(cumulative_port_tcp[ip]) > SLOW_SCAN_THRESHOLD:
-            cumulative_score[ip] += 20
-            log_suspicious(ip, "Slow TCP scan", cumulative_score[ip])
-
-        if len(cumulative_port_udp[ip]) > SLOW_SCAN_THRESHOLD:
-            cumulative_score[ip] += 20
-            log_suspicious(ip, "Slow UDP scan", cumulative_score[ip])
-
-        if cumulative_score[ip] >= CUMULATIVE_ALERT_THRESHOLD and ip not in blocklist:
-            blocklist.add(ip)
-            blocklist_reasons[ip] = "Long-term suspicious behavior"
-            log_confirmed(ip, "Long-term suspicious behavior", cumulative_score[ip])
-
-
-        inactive_windows[ip] = min(inactive_windows[ip], 5)
-
-        if inactive_windows[ip] < 3:
-            cumulative_score[ip] = int(cumulative_score[ip] * 0.98)
-        elif inactive_windows[ip] < 5:
-            cumulative_score[ip] = int(cumulative_score[ip] * 0.92)
-        else:
-            cumulative_score[ip] = int(cumulative_score[ip] * 0.85)
-
-        if cumulative_score[ip] <= 0 and ip not in blocklist:
-            del cumulative_score[ip]
-            inactive_windows.pop(ip, None)
+    count_syn.clear()
+    count_udp.clear()
+    count_icmp.clear()
 
 
 def catchpacket(packet):
-    global small_time, slow_time, my_host
+    global small_time, my_host
 
     if my_host is None:
         my_host = get_local_ip()
         if my_host is None:
             return
 
-    if packet.haslayer(IP):
-        src_ip = packet[IP].src
-        dst_ip = packet[IP].dst
+    if not packet.haslayer(IP):
+        return
 
-        if src_ip in blocklist:
-             return
+    #TCP
+    src_ip = packet[IP].src
+    dst_ip = packet[IP].dst
 
-        if packet.haslayer(TCP) and dst_ip == my_host:
-            packet_count_tcp[src_ip] += 1
-            port = packet[TCP].dport
+    if src_ip in blocklist:
+        return
 
-            port_set_tcp[src_ip][port] += 1
-            cumulative_port_tcp[src_ip].add(port)
+    if dst_ip != my_host:
+        return
 
-            flags = packet[TCP].flags
+    last_seen[src_ip] = time.time()
 
-            if flags & 0x02 and not flags & 0x10:
-                syn_count[src_ip] += 1
-            elif flags & 0x10 and not flags & 0x02:
-                ack_count[src_ip] += 1
-            elif 'F' in str(flags) and 'P' in str(flags) and 'U' in str(flags):
-                xmas_count[src_ip] += 1
-            elif flags & 0x01 and not flags & 0x10:
-                fin_count[src_ip] += 1
-            elif not flags:
-                null_flags_exist[src_ip] += 1
+    if packet.haslayer(TCP):
+        flags = packet[TCP].flags
+        dport = packet[TCP].dport
 
-        if packet.haslayer(UDP) and dst_ip == my_host:
-            packet_count_udp[src_ip] += 1
-            port = packet[UDP].dport
-            port_set_udp[src_ip].add(port)
-            cumulative_port_udp[src_ip].add(port)
+        if flags & 0x02 and not flags & 0x10:   # SYN only
+            count_syn[src_ip] += 1
 
-        if packet.haslayer(ICMP) and dst_ip == my_host and packet[ICMP].type == 8:
-            packet_count_icmp[src_ip] += 1
+        if dport not in KNOWN_PORTS:
+            uncommon_port_count[src_ip] += 1
+            if uncommon_port_count[src_ip] >= UNCOMMON_PORT_THRESHOLD:
+                blocklist_ip(
+                    src_ip,
+                    "Port scan",
+                    f"uncommon ports hit={uncommon_port_count[src_ip]}"
+                )
+                return
 
+    # UDP
+    if packet.haslayer(UDP):
+        count_udp[src_ip] += 1
+        if packet[UDP].dport not in KNOWN_PORTS:
+            uncommon_port_count[src_ip] += 1
+            if uncommon_port_count[src_ip] >= UNCOMMON_PORT_THRESHOLD:
+                blocklist_ip(
+                    src_ip,
+                    "Port scan",
+                    f"uncommon ports hit={uncommon_port_count[src_ip]}"
+                )
+                return
 
-    if time.time() - small_time > small_window:
+    # ICMP echo requests only
+    if packet.haslayer(ICMP) and packet[ICMP].type == 8:
+        count_icmp[src_ip] += 1
+
+    # 5s window
+    now = time.time()
+    if now - small_time >= SMALL_WINDOW:
         check_small_window()
-
-        packet_count_tcp.clear()
-        packet_count_udp.clear()
-        packet_count_icmp.clear()
-        port_set_tcp.clear()
-        port_set_udp.clear()
-        syn_count.clear()
-        ack_count.clear()
-        fin_count.clear()
-        xmas_count.clear()
-        null_flags_exist.clear()
-        score.clear()
-
-        small_time = time.time()
-
-    if time.time() - slow_time > slow_window:
-        check_slow_window()
-
-        cumulative_port_tcp.clear()
-        cumulative_port_udp.clear()
-
-        slow_time = time.time()
+        small_time = now
 
 
-print("📡 IDS Running...")
-print(f"   Monitoring host: {my_host}")
-print(f"   Suspicious log : {SUSPICIOUS_LOG}")
-print(f"   Confirmed log  : {CONFIRMED_LOG}\n")
+print("=" * 55)
+print("  IDS v4")
+print("=" * 55)
+print(f"   Host:    {my_host}")
+print(f"   Profile: {ACTIVE_PROFILE}  (K={PROFILE['K']}x deviation)")
+print(f"   Floors:  SYN {PROFILE['syn_floor']} | "
+      f"UDP {PROFILE['udp_floor']} | "
+      f"ICMP {PROFILE['icmp_floor']}")
+print(f"   Port scan threshold: {UNCOMMON_PORT_THRESHOLD} uncommon ports")
+print(f"   Inactivity timeout:  {INACTIVITY_TIMEOUT // 60} minutes")
+print()
 
 sniff(
     iface=["eth0", "lo"],
     prn=catchpacket,
-    store=False
+    store=False,
 )
+
+
+snapshot = tracemalloc.take_snapshot()
+stats = snapshot.statistics("lineno")
+print("\n=== Top 5 Memory Allocations ===")
+for stat in stats[:5]:
+    print(stat)
+current, peak = tracemalloc.get_traced_memory()
+print(f"\nCurrent: {current / 1024:.2f} KB")
+print(f"Peak:    {peak / 1024:.2f} KB")
