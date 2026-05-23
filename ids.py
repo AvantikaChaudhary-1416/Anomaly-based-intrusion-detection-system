@@ -30,7 +30,20 @@ PROFILES = {
     },
 }
 
-ACTIVE_PROFILE = "workstation"
+def choose_profile():
+    print("Select a profile:")
+    print("  1. server")
+    print("  2. workstation")
+    print("  3. home_iot")
+    choice = input("Enter choice (1/2/3): ").strip()
+    mapping = {"1": "server", "2": "workstation", "3": "home_iot"}
+    if choice in mapping:
+        return mapping[choice]
+    else:
+        print("   Invalid choice, defaulting to workstation.")
+        return "workstation"
+
+ACTIVE_PROFILE = choose_profile()
 PROFILE        = PROFILES[ACTIVE_PROFILE]
 
 EMA_ALPHA = 0.4
