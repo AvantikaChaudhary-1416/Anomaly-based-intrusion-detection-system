@@ -37,9 +37,6 @@ Edit `ids.py` and set `ACTIVE_PROFILE` to match your environment:
 | `workstation` | Office machines | 150 | 80 | 60 |
 | `home_iot` | Home / IoT devices | 30 | 20 | 15 |
 
-```python
-ACTIVE_PROFILE = "workstation"   # change this
-```
 
 ### 3. Run
 
