@@ -1,8 +1,8 @@
-from scapy.all import *
 import socket
 import json
 import time
 from collections import defaultdict
+from scapy.all import *
 
 # ── How long to capture (seconds) ────────────────────────────────
 # Run this during your busiest traffic period (e.g. 9pm peak).
@@ -28,16 +28,19 @@ def get_local_ip():
 
 my_host = get_local_ip()
 
-# Raw counters for current window
+# Raw counters for current window (per-IP)
 count_syn  = defaultdict(int)
 count_udp  = defaultdict(int)
 count_icmp = defaultdict(int)
 
-# All per-window observations across all IPs
-# Each entry is one IP's count for one window
+# Per-IP observations (one entry per IP per window)
 all_syn_obs  = []
 all_udp_obs  = []
 all_icmp_obs = []
+
+# Global total observations (one entry per window — sum across all IPs)
+all_syn_total_obs = []
+all_udp_total_obs = []
 
 window_start  = time.time()
 capture_start = time.time()
@@ -45,9 +48,9 @@ windows_seen  = 0
 
 def flush_window():
     """
-    At end of each 5s window, record every active IP's counts
-    as individual observations. These represent what a normal
-    IP looks like in a single window.
+    At end of each 5s window:
+    - Record per-IP counts as individual observations (for per-IP baseline)
+    - Record total SYN/UDP across all IPs (for DDoS global baseline)
     """
     global windows_seen
 
@@ -57,10 +60,20 @@ def flush_window():
         list(count_icmp.keys())
     )
 
+    window_syn_total = 0
+    window_udp_total = 0
+
     for ip in all_ips:
         all_syn_obs.append(count_syn[ip])
         all_udp_obs.append(count_udp[ip])
         all_icmp_obs.append(count_icmp[ip])
+
+        window_syn_total += count_syn[ip]
+        window_udp_total += count_udp[ip]
+
+    # Store global totals for this window
+    all_syn_total_obs.append(window_syn_total)
+    all_udp_total_obs.append(window_udp_total)
 
     count_syn.clear()
     count_udp.clear()
@@ -101,7 +114,6 @@ def catchpacket(packet):
         flush_window()
         window_start = time.time()
 
-    # Stop sniffing after capture duration
     if time.time() - capture_start >= CAPTURE_DURATION:
         return True  # signals scapy to stop
 
@@ -132,9 +144,11 @@ sniff(
 flush_window()
 
 baseline = {
-    "syn":  compute_mean(all_syn_obs),
-    "udp":  compute_mean(all_udp_obs),
-    "icmp": compute_mean(all_icmp_obs),
+    "syn":       compute_mean(all_syn_obs),
+    "udp":       compute_mean(all_udp_obs),
+    "icmp":      compute_mean(all_icmp_obs),
+    "syn_total": compute_mean(all_syn_total_obs),   # global DDoS baseline
+    "udp_total": compute_mean(all_udp_total_obs),   # global DDoS baseline
     "meta": {
         "capture_duration_s": CAPTURE_DURATION,
         "windows_captured":   windows_seen,
@@ -147,7 +161,9 @@ with open(OUTPUT_FILE, "w") as f:
     json.dump(baseline, f, indent=2)
 
 print(f"\n\n  Baseline saved to {OUTPUT_FILE}")
-print(f"  SYN  mean: {baseline['syn']}  packets/window")
-print(f"  UDP  mean: {baseline['udp']}  packets/window")
-print(f"  ICMP mean: {baseline['icmp']} packets/window")
+print(f"  SYN  mean (per-IP):  {baseline['syn']}  packets/window")
+print(f"  UDP  mean (per-IP):  {baseline['udp']}  packets/window")
+print(f"  ICMP mean (per-IP):  {baseline['icmp']} packets/window")
+print(f"  SYN  mean (global):  {baseline['syn_total']} packets/window")
+print(f"  UDP  mean (global):  {baseline['udp_total']} packets/window")
 print(f"  Windows captured: {windows_seen}")
