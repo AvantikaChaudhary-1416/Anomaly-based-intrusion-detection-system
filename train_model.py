@@ -89,11 +89,19 @@ fl = log_transform(fl, skew_cols)
 drop_cols = ['src_ip', 'dst_ip', 'src_port', 'dst_port']
 fl_features = [c for c in fl.columns if c not in drop_cols]
 # encode remaining categoricals
+# we cannot give string to the IF so pd.get_dummies takes a categorical column example DIRECTIONS here and creates a seperate   0/1 column for each unique value => inbound outbound
+
+#   direction_inbound   direction_outbound
+#0                   0                  1     this is outbound
+#1                   1                  0     this is inbound
+#2                   0                  0
+
 for cat_col in ['direction']:
     if cat_col in fl.columns:
         dummies = pd.get_dummies(fl[cat_col], prefix=cat_col)
-        fl = pd.concat([fl, dummies], axis=1)
-        fl_features = [c for c in fl_features if c != cat_col] + list(dummies.columns)
+        fl = pd.concat([fl, dummies], axis=1)     #concatenate the new columns produced by pd.dummies as columns(axis=1)
+        fl_features = [c for c in fl_features if c != cat_col] + list(dummies.columns)   #drop directions
+
 for bool_col in ['internal_src', 'internal_dst']:
     if bool_col in fl.columns:
         fl[bool_col] = fl[bool_col].astype(int)
