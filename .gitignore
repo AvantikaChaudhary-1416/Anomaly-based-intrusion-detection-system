@@ -1,3 +1,4 @@
-*.log
-*.save
-baseline.json
+*.json
+*.csv
+commands.txt
+__pycache__/

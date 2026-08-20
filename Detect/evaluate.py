@@ -1,34 +1,27 @@
 import pandas as pd
 import json
 import joblib
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from preprocess import(preprocess_ip_windows,preprocess_flows,preprocess_windows)
 
 # ── Config ────────────────────────────────────────────────────────
 DETECT_FLOWS_FILE      = "detect_flows.json"
 DETECT_WINDOWS_FILE    = "detect_windows.json"
 DETECT_IP_WINDOWS_FILE = "detect_ip_windows.json"
 
-FLOWS_MODEL_PATH      = "flows_model.joblib"
-IP_WINDOWS_MODEL_PATH = "ip_windows_model.joblib"
-WINDOWS_MODEL_PATH    = "windows_model.joblib"
+# models live in ids/pre_Trained_models/, this script lives in ids/Detect/
+MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pre_Trained_models")
+FLOWS_MODEL_PATH      = os.path.join(MODEL_DIR, "flows_model.joblib")
+IP_WINDOWS_MODEL_PATH = os.path.join(MODEL_DIR, "ip_windows_model.joblib")
+WINDOWS_MODEL_PATH    = os.path.join(MODEL_DIR, "windows_model.joblib")
 
-# corroboration weights — flows_model is volume-biased/noisy (see project notes),
-# ip_windows/windows are structurally harder to fool with a single large transfer
 WEIGHTS = {'flow': 0.2, 'ipwin': 0.4, 'global': 0.4}
 SEVERITY_ALERT_THRESHOLD = 0.6
 # ─────────────────────────────────────────────────────────────────
 
-
-def load_and_score(json_path, model_path):
-    """Load a detection-data JSON, score it with its trained model.
-    Uses the (model, feature_cols) bundle saved at training time so
-    the feature set/order is guaranteed to match what the model was fit on."""
-    with open(json_path) as f:
-        df = pd.DataFrame(json.load(f))
-
-    if df.empty:
-        print(f"[warn] {json_path} is empty — no rows to score")
-        return df
-
+def score(df, json_path, model_path):
     bundle = joblib.load(model_path)
     model, feature_cols = bundle['model'], bundle['feature_cols']
 
@@ -56,15 +49,36 @@ def build_severity(merged):
 
 def main():
     print("Loading and scoring flows...")
-    flows = load_and_score(DETECT_FLOWS_FILE, FLOWS_MODEL_PATH)
+    with open(DETECT_FLOWS_FILE) as f:
+        fl = pd.DataFrame(json.load(f))
+
+    if fl.empty:
+        print(f"[warn] {DETECT_FLOWS_FILE} is empty — no rows to score")
+
+    fl, fl_feature = preprocess_flows(fl)
+    flows = score(fl, DETECT_FLOWS_FILE, FLOWS_MODEL_PATH)
     print(f"  {len(flows)} flows scored")
 
     print("Loading and scoring ip_windows...")
-    ip_windows = load_and_score(DETECT_IP_WINDOWS_FILE, IP_WINDOWS_MODEL_PATH)
+    with open(DETECT_IP_WINDOWS_FILE) as f:
+        ipw = pd.DataFrame(json.load(f))
+
+    if ipw.empty:
+        print(f"[warn] {DETECT_IP_WINDOWS_FILE} is empty — no rows to score")
+
+    ipw, ipw_feature = preprocess_ip_windows(ipw)
+    ip_windows = score(ipw, DETECT_IP_WINDOWS_FILE, IP_WINDOWS_MODEL_PATH)
     print(f"  {len(ip_windows)} ip_window rows scored")
 
     print("Loading and scoring windows...")
-    windows = load_and_score(DETECT_WINDOWS_FILE, WINDOWS_MODEL_PATH)
+    with open(DETECT_WINDOWS_FILE) as f:
+        w = pd.DataFrame(json.load(f))
+
+    if w.empty:
+        print(f"[warn] {DETECT_WINDOWS_FILE} is empty — no rows to score")
+
+    w, w_feature = preprocess_windows(w)
+    windows = score(w, DETECT_WINDOWS_FILE, WINDOWS_MODEL_PATH)
     print(f"  {len(windows)} global window rows scored")
 
     if flows.empty:
@@ -83,7 +97,7 @@ def main():
     # so it exact-matches ip_windows['window_start'] — no range logic needed.
     if not ip_windows.empty:
         ip_win_scored = ip_windows[['ip', 'window_start', 'score', 'flag']].rename(
-            columns={'score': 'score_ipwin', 'flag': 'flag_ipwin'}   #only taking particular columns form ip_windows
+            columns={'score': 'score_ipwin', 'flag': 'flag_ipwin'}
         )
         merged = flows.merge(
             ip_win_scored,
@@ -91,11 +105,6 @@ def main():
             right_on=['ip', 'window_start'],
             how='left'
         )
-        #in flows, we have src_ip and ip_window_start_ts, in ip_windows we have ip and window_start, so we are merging on those columns to get the score and flag from ip_windows into flows 
-        # flows is the left df and ip the right df left_on=> feature name in flow right_on=> feature name in ip_windows
-        # how='left' means we want to keep all rows from flows and only matching rows from ip_windows, if there is no match we will have NaN in the new columns
-
-
     else:
         merged = flows.copy()
         merged['score_ipwin'] = None
