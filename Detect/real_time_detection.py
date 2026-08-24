@@ -24,7 +24,8 @@ IP_WINDOW_SIZE_S  = 300
 FLOWS_FILE        = "detect_flows.json"        
 WINDOWS_FILE      = "detect_windows.json"
 IP_WINDOWS_FILE   = "detect_ip_windows.json"
-ALERTS_LOG_FILE   = "alerts_realtime.csv"      
+ALERTS_LOG_FILE       = "alerts_realtime.csv"        # FAST tier only
+CORROBORATED_LOG_FILE = "alerts_corroborated.csv"    # CORROBORATED tier only      
 AUTOSAVE_EVERY_N_WINDOWS = 60
 
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pre_Trained_models")
@@ -525,14 +526,45 @@ ipwindow_bundle = joblib.load(IP_WINDOWS_MODEL_PATH)
 window_bundle   = joblib.load(WINDOWS_MODEL_PATH)
 
 featuremeans = {}
-if os.path.exists(FEATUREMEAN_PATH):
-    with open(FEATUREMEAN_PATH) as f:
-        featuremeans = json.load(f)
-    print(f"  loaded Featuremean.json from {FEATUREMEAN_PATH}")
-else:
-    print(f"  [warn] {FEATUREMEAN_PATH} not found -- alerts will fire without an 'explain' string. "
-          f"Fix FEATUREMEAN_PATH at the top of this file.")
+os.makedirs(os.path.dirname(os.path.abspath(ALERTS_LOG_FILE)) or ".", exist_ok=True)
+os.makedirs(os.path.dirname(os.path.abspath(CORROBORATED_LOG_FILE)) or ".", exist_ok=True)
 
+# FAST alert fieldnames — flow / ip_window / window, one tier per row
+_fast_fieldnames = [
+    'tier', 'alert_type', 'alert_time', 'severity',
+    'src_ip', 'src_port', 'dst_ip', 'dst_port',
+    'flow_start_ts', 'flow_duration_s', 'flag_flow', 'reason_flow',
+    'ip', 'ip_window_start', 'flag_ipwin', 'reason_ipwin',
+    'window_timestamp', 'flag_global', 'reason_global',
+]
+
+# CORROBORATED fieldnames — always has flow identity, plus whichever of
+# ipwin/global joined (None where a component never arrived / partial)
+_corroborated_fieldnames = [
+    'tier', 'alert_type', 'alert_time', 'severity',
+    'src_ip', 'src_port', 'dst_ip', 'dst_port',
+    'flow_start_ts', 'flow_duration_s',
+    'flag_flow', 'reason_flow',
+    'ip', 'ip_window_start', 'flag_ipwin', 'reason_ipwin',
+    'window_timestamp', 'flag_global', 'reason_global',
+    'corroborated_severity',
+]
+
+def _write_fast_row(row):
+    is_new = not os.path.exists(ALERTS_LOG_FILE)
+    with open(ALERTS_LOG_FILE, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=_fast_fieldnames, extrasaction='ignore')
+        if is_new:
+            writer.writeheader()
+        writer.writerow(row)
+
+def _write_corroborated_row(row):
+    is_new = not os.path.exists(CORROBORATED_LOG_FILE)
+    with open(CORROBORATED_LOG_FILE, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=_corroborated_fieldnames, extrasaction='ignore')
+        if is_new:
+            writer.writeheader()
+        writer.writerow(row)
 
 def score_one(record, bundle, preprocess_fn):
     """Score a single record (dict) with a trained model bundle.
@@ -596,6 +628,7 @@ _alert_fieldnames = [
 _alerted_flows = set()
 _alerted_ipwindows = set()
 _alerted_windows = set()
+_alerted_corroborated=set()
 #if tracked in fast no need to track in corroborated
 
 def _write_alert_row(row):
@@ -612,13 +645,14 @@ def emit_fast_flow(flow_state, flag_flow, reason_flow):
     flow_key = f"{flow_state['flow_start_ts']}_{flow_state['src_ip']}_{flow_state['dst_ip']}"
     if flow_key in _alerted_flows:
         return
-    _alerted_flows.add(flow_key)
     
     # Calculate severity based on flow alone (renormalized)
     severity = compute_severity(flag_flow, None, None)
     
     if severity < SEVERITY_ALERT_THRESHOLD:
         return
+    
+    _alerted_flows.add(flow_key)
     
     row = {
         'tier': 'FAST_FLOW',
@@ -649,7 +683,6 @@ def emit_fast_ipwindow(ip_row, flag_ipwin, reason_ipwin):
     ip_key = f"{ip_row['ip']}_{ip_row['window_start']}"
     if ip_key in _alerted_ipwindows:
         return
-    _alerted_ipwindows.add(ip_key)
     
     # Calculate severity based on IP window alone
     severity = compute_severity(None, flag_ipwin, None)
@@ -657,6 +690,7 @@ def emit_fast_ipwindow(ip_row, flag_ipwin, reason_ipwin):
     if severity < SEVERITY_ALERT_THRESHOLD:
         return
     
+    _alerted_ipwindows.add(ip_key)
     row = {
         'tier': 'FAST_IPWIN',
         'alert_type': 'ip_window',
@@ -681,13 +715,14 @@ def emit_fast_window(window_row, flag_global, reason_global):
     window_key = window_row['timestamp']
     if window_key in _alerted_windows:
         return
-    _alerted_windows.add(window_key)
     
     # Calculate severity based on global window alone
     severity = compute_severity(None, None, flag_global)
     
     if severity < SEVERITY_ALERT_THRESHOLD:
         return
+
+    _alerted_windows.add(window_key)
     
     row = {
         'tier': 'FAST_GLOBAL',
@@ -720,7 +755,7 @@ def emit_corroborated(flow_state, flag_ipwin, flag_global,
     """
     
     flow_key = f"{flow_state['flow_start_ts']}_{flow_state['src_ip']}_{flow_state['dst_ip']}"
-    if flow_key in _alerted_flows:
+    if flow_key in _alerted_corroborated:
         return  # Already alerted as FAST_FLOW, but we want to update with corroboration
     
     # Calculate corroborated severity with all available components
@@ -732,7 +767,7 @@ def emit_corroborated(flow_state, flag_ipwin, flag_global,
     
     if severity < SEVERITY_ALERT_THRESHOLD:
         return
-    
+    _alerted_corroborated.append(flow_key)
     row = {
         'tier': tier,  # 'CORROBORATED' or 'CORROBORATED_PARTIAL'
         'alert_type': 'corroborated',
@@ -764,7 +799,7 @@ def emit_corroborated(flow_state, flag_ipwin, flag_global,
             row['ip'] = flow_state['src_ip']
             row['ip_window_start'] = flow_state.get('ip_window_start_ts')
     
-    _write_alert_row(row)
+    _write_corroborated_row(row)
 
     # Print rich alert
     print(f"\n  🔗 [{tier}] severity={severity:.2f} {flow_state['src_ip']}:{flow_state['src_port']} -> "
@@ -943,37 +978,21 @@ def _recheck_pending():
     pending_flows.extend(still_pending)
 
 def print_alert_summary():
-    """Print summary of all alerts by type and tier"""
-    try:
-        df = pd.read_csv(ALERTS_LOG_FILE)
-        
-        print("\n" + "="*60)
-        print("ALERT SUMMARY")
-        print("="*60)
-        
-        # By tier
-        tier_counts = df['tier'].value_counts()
-        print(f"\nBy Alert Tier:")
-        for tier, count in tier_counts.items():
-            print(f"  {tier}: {count}")
-        
-        # By severity
-        print(f"\nSeverity Distribution:")
-        print(f"  High (>0.8): {len(df[df['severity'] > 0.8])}")
-        print(f"  Medium (0.6-0.8): {len(df[(df['severity'] >= 0.6) & (df['severity'] <= 0.8)])}")
-        print(f"  Low (<0.6): {len(df[df['severity'] < 0.6])}")
-        
-        # Top offending IPs
+    for label, path in [('FAST', ALERTS_LOG_FILE), ('CORROBORATED', CORROBORATED_LOG_FILE)]:
+        try:
+            df = pd.read_csv(path)
+        except Exception as e:
+            print(f"\n[{label}] Could not read {path}: {e}")
+            continue
+
+        print(f"\n{'='*60}\n{label} ALERT SUMMARY\n{'='*60}")
+        print(df['tier'].value_counts().to_string())
+        print(f"\nSeverity: high(>0.8)={len(df[df['severity']>0.8])}  "
+              f"medium(0.6-0.8)={len(df[(df['severity']>=0.6)&(df['severity']<=0.8)])}  "
+              f"low(<0.6)={len(df[df['severity']<0.6])}")
         if 'src_ip' in df.columns:
-            top_ips = df['src_ip'].value_counts().head(5)
-            print(f"\nTop Source IPs:")
-            for ip, count in top_ips.items():
-                print(f"  {ip}: {count}")
-        
-        print("="*60)
-        
-    except Exception as e:
-        print(f"Could not generate summary: {e}")
+            print("\nTop source IPs:")
+            print(df['src_ip'].value_counts().head(5).to_string())
 
 # ============================================================
 # USAGE - At the end of capture
