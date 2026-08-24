@@ -2,3 +2,5 @@
 *.csv
 commands.txt
 __pycache__/
+*.html
+*.pdf
