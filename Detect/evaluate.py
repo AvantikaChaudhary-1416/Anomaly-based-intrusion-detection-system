@@ -6,11 +6,12 @@ import csv
 import time
 import datetime as dt_module
 import numpy as np
-
+from collections import deque
+from check_Signature import(checkSignatures)
 
 ALERTS_LOG_FILE       = "alerts_realtime.csv"        # FAST tier only
 CORROBORATED_LOG_FILE = "alerts_corroborated.csv"    # CORROBORATED tier only      
-FEATURESTAT_FILE = os.path.join(os.path.dir(os.path.abspath(__file__)),"..","FeatureStat.json")
+FEATURESTAT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),"..","FeatureStat.json")
 SEVERITY_ALERT_THRESHOLD = 0.6
 EXPLAIN_TOP_N = 3
 WEIGHTS = {'flow': 0.2, 'ipwin': 0.4, 'global': 0.4}
@@ -36,9 +37,11 @@ os.makedirs(os.path.dirname(os.path.abspath(CORROBORATED_LOG_FILE)) or ".", exis
 _fast_fieldnames = [
     'tier', 'alert_type', 'alert_time', 'severity',
     'src_ip', 'src_port', 'dst_ip', 'dst_port',
-    'flow_start_ts', 'flow_duration_s', 'flag_flow', 'reason_flow',
-    'ip', 'ip_window_start', 'flag_ipwin', 'reason_ipwin',
-    'window_timestamp', 'flag_global', 'reason_global',
+    'flow_start_ts', 'flow_duration_s', 'flag_flow',
+    'ip', 'ip_window_start', 'flag_ipwin',
+    'window_timestamp', 'flag_global',
+    'attack', 'confidence', 'reason',
+    'corroborated_severity',
 ]
 
 # CORROBORATED fieldnames — always has flow identity, plus whichever of
@@ -93,21 +96,28 @@ def explain(prep_row, feature_cols, model_key):
 
     model_feature_stat=featureStats[model_key]
     mean=pd.Series(model_feature_stat['mu'])
-    sigma_inv=np.array(model_feature_stat['sigma_inv'])
+    sigma_inv=np.array(model_feature_stat['Sigma_inv'])
     nonzero_cols=model_feature_stat['nonzero_cols']
     zero_cols=model_feature_stat['zero_cols']
 
     reasons = []
-
+    never_seen=[]
     for c in zero_cols:
         val = prep_row.get(c, 0)
         if val and val != 0:
-            reasons.append(f"{c} as a feature had no appearance in training data")
+            never_seen.append(c)
 
+    top_features=list(never_seen)
     if nonzero_cols:
-        d=np.array([prep_row.get(c,0) for c in nonzero_cols])
+        d=np.array([prep_row.get(c,0)- mean[c] for c in nonzero_cols])
         w=sigma_inv@d # @ is for matrix multiplication
         contributor=d*w
+
+        top=sorted(zip(contributor,nonzero_cols), key=lambda x:abs(x[0]),reverse=True)[:3]
+        top_feature += [name for _, name in top]
+
+    matches=checkSignatures(prep_row, top_feature)
+    return matches
 
         
 
@@ -139,7 +149,7 @@ _alerted_corroborated=set()
 
 
 #FAST flow analyzed
-def emit_fast_flow(flow_state, flag_flow, reason_flow):
+def emit_fast_flow(flow_state, flag_flow):
     """FAST alert for flow anomaly - fires immediately"""
     
     # Deduplicate
@@ -167,17 +177,19 @@ def emit_fast_flow(flow_state, flag_flow, reason_flow):
         'flow_start_ts': flow_state['flow_start_ts'],
         'flow_duration_s': flow_state['flow_duration_s'],
         'flag_flow': flag_flow,
-        'reason_flow': reason_flow,
-        'corroborated_severity': None,
+        'attack':flow_state['attack_flow'],
+        'confidence':flow_state['confidence_flow'],
+        'reason':flow_state['reason_flow'],
+        'corroborated_severity': None
     }
     _write_fast_row(row)
-    
+
     print(f"\n [FAST_FLOW] severity={severity:.2f} {flow_state['src_ip']}:{flow_state['src_port']} -> "
           f"{flow_state['dst_ip']}:{flow_state['dst_port']}")
-    print(f"     → {reason_flow}")
+    print(f"     → {flow_state['reason_flow']}")
 
 #FAST ip window analyzed
-def emit_fast_ipwindow(ip_row, flag_ipwin, reason_ipwin):
+def emit_fast_ipwindow(ip_row, flag_ipwin, best_match):
     """FAST alert for IP window anomaly - fires immediately when IP window flushes"""
     
     # Deduplicate
@@ -200,16 +212,18 @@ def emit_fast_ipwindow(ip_row, flag_ipwin, reason_ipwin):
         'ip': ip_row['ip'],
         'ip_window_start': ip_row['window_start'],
         'flag_ipwin': flag_ipwin,
-        'reason_ipwin': reason_ipwin,
+        'attack':best_match['attack'],
+        'confidence':best_match['confidence'],
+        'reason':best_match['reason'],
         'corroborated_severity': None,
     }
     _write_fast_row(row)
     
     print(f"\n  [FAST_IPWIN] severity={severity:.2f} IP: {ip_row['ip']}")
-    print(f"     → {reason_ipwin}")
+    print(f"     → {best_match['reason']}")
 
 #FAST window analyzed
-def emit_fast_window(window_row, flag_global, reason_global):
+def emit_fast_window(window_row, flag_global, best_match):
     """FAST alert for global window anomaly - fires immediately when window flushes"""
     
     # Deduplicate
@@ -232,21 +246,22 @@ def emit_fast_window(window_row, flag_global, reason_global):
         'severity': severity,
         'window_timestamp': window_row['timestamp'],
         'flag_global': flag_global,
-        'reason_global': reason_global,
+        'attack':best_match['attack'],
+        'confidence':best_match['confidence'],
+        'reason':best_match['reason'],
         'corroborated_severity': None,
     }
     _write_fast_row(row)
     
     print(f"\n  [FAST_GLOBAL] severity={severity:.2f} at timestamp {window_row['timestamp']}")
-    print(f"     → {reason_global}")
+    print(f"     → {best_match['reason']}")
 
 
 # ============================================================
 # CORROBORATED ALERT - All 3 types combined
 # ============================================================
 
-def emit_corroborated(flow_state, flag_ipwin, flag_global, 
-                      reason_ipwin, reason_global, tier='CORROBORATED'):
+def emit_corroborated(flow_state, flag_ipwin, flag_global, best_match_ipwin, best_match_global,recent_ipwindow_scores,recent_window_scores, tier='CORROBORATED'):
     """
     Corroborated alert combining all available data.
     Called when:
@@ -282,20 +297,20 @@ def emit_corroborated(flow_state, flag_ipwin, flag_global,
         'flow_start_ts': flow_state['flow_start_ts'],
         'flow_duration_s': flow_state['flow_duration_s'],
         'flag_flow': flow_state.get('flag_flow'),
-        'reason_flow': flow_state.get('reason_flow'),
+        'reason_flow': flow_state['reason_flow'],
         # IP Window fields
         'flag_ipwin': flag_ipwin,
-        'reason_ipwin': reason_ipwin,
+        'reason_ipwin': best_match_ipwin['reason'],
         # Global Window fields
         'flag_global': flag_global,
-        'reason_global': reason_global,
+        'reason_global': best_match_global['reason'],
         # Combined severity (for tracking)
         'corroborated_severity': severity,
     }
     
     # Add IP if available
     if flag_ipwin is not None:
-        ipw_hit = _lookup_ipwindow(flow_state['src_ip'], flow_state.get('ip_window_start_ts'))
+        ipw_hit = _lookup_ipwindow(flow_state['src_ip'], flow_state.get('ip_window_start_ts'),recent_ipwindow_scores)
         if ipw_hit:
             row['ip'] = flow_state['src_ip']
             row['ip_window_start'] = flow_state.get('ip_window_start_ts')
@@ -311,9 +326,9 @@ def emit_corroborated(flow_state, flag_ipwin, flag_global,
     if flow_state.get('flag_flow') == -1:
         components.append(f"FLOW: {flow_state.get('reason_flow')}")
     if flag_ipwin == -1:
-        components.append(f"IPWIN: {reason_ipwin}")
+        components.append(f"IPWIN: {best_match_ipwin['reason']}")
     if flag_global == -1:
-        components.append(f"GLOBAL: {reason_global}")
+        components.append(f"GLOBAL: {best_match_global['reason']}")
     
     for comp in components:
         print(f"     • {comp}")
@@ -374,10 +389,10 @@ def _evict_old_ipwindow(cache,retention_s):
         del cache[k]
 
 
-def _recheck_pending():
+def _recheck_pending(pending_flows, recent_ipwindow_scores, recent_window_scores):
     """Re-join any pending flows against the caches."""
     still_pending = deque()
-    now_t = now()
+    now_t = time.time()
     
     while pending_flows:
         flow_state = pending_flows.popleft()

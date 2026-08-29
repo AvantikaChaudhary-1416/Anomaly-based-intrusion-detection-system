@@ -541,19 +541,22 @@ window_bundle   = joblib.load(WINDOWS_MODEL_PATH)
 def on_flow_closed(record):
     """Score and alert on flow closure"""
     score_flow, flag_flow, prep_row = score_one(record, flows_bundle, preprocess_flows)
-    reason_flow = explain(prep_row, flows_bundle['feature_cols'], 'flows')
+    matches = explain(prep_row, flows_bundle['feature_cols'], 'flows')
+    best_match=matches[0]
     
     flow_state = dict(record)
     flow_state.update(
         score_flow=score_flow,
         flag_flow=flag_flow,
-        reason_flow=reason_flow,
+        attack_flow=best_match['attack'],
+        confidence_flow=best_match['confidence'],
+        reason_flow=best_match['reason'],
         queued_at=now()
     )
     
     # FAST alert - flow only
     if flag_flow == -1:
-        emit_fast_flow(flow_state, flag_flow, reason_flow)
+        emit_fast_flow(flow_state, flag_flow)
     
     # Try immediate join
     ipw_hit = _lookup_ipwindow(record['src_ip'], record.get('ip_window_start_ts'),recent_ipwindow_scores)
@@ -564,7 +567,7 @@ def on_flow_closed(record):
         emit_corroborated(
             flow_state,
             ipw_hit['flag'], win_hit['flag'],
-            ipw_hit['explain'], win_hit['explain'],
+            ipw_hit['explain'], win_hit['explain'],recent_ipwindow_scores,recent_window_scores,
             tier='CORROBORATED'
         )
     else:
@@ -575,37 +578,39 @@ def on_flow_closed(record):
 def on_window_flushed(row):
     """Score and alert on global window flush"""
     score, flag, prep_row = score_one(row, window_bundle, preprocess_windows)
-    reason = explain(prep_row, window_bundle['feature_cols'], 'window')
+    matches = explain(prep_row, window_bundle['feature_cols'], 'windows')
+    best_match=matches[0]
     
     # Store in cache for joins
     recent_window_scores[row['timestamp']] = {
-        'score': score, 'flag': flag, 'explain': reason, 'ts': now(),
+        'score': score, 'flag': flag, 'explain': best_match, 'ts': now(),
     }
     
     # FAST alert - global window only
     if flag == -1:
-        emit_fast_window(row, flag, reason)
+        emit_fast_window(row, flag, best_match)
     
     _evict_old(recent_window_scores, WINDOW_CACHE_RETENTION_S)
-    _recheck_pending()
+    _recheck_pending(pending_flows, recent_ipwindow_scores, recent_window_scores)
 
 
 def on_ipwindow_flushed(row):
     """Score and alert on IP window flush"""
     score, flag, prep_row = score_one(row, ipwindow_bundle, preprocess_ip_windows)
-    reason = explain(prep_row, ipwindow_bundle['feature_cols'], 'ipw')
-    
+    matches = explain(prep_row, ipwindow_bundle['feature_cols'], 'ipw')
+    best_match=matches[0]
+
     # Store in cache for joins
     recent_ipwindow_scores[(row['ip'], row['window_start'])] = {
-        'score': score, 'flag': flag, 'explain': reason, 'ts': now(),
+        'score': score, 'flag': flag, 'explain': best_match, 'ts': now(),
     }
     
     # FAST alert - IP window only
     if flag == -1:
-        emit_fast_ipwindow(row, flag, reason)
+        emit_fast_ipwindow(row, flag, best_match)
     
     _evict_old_ipwindow(recent_ipwindow_scores, IPWINDOW_CACHE_RETENTION_S)
-    _recheck_pending()
+    _recheck_pending(pending_flows, recent_ipwindow_scores, recent_window_scores)
 
 # ============================================================
 # CAPTURE LOOP
