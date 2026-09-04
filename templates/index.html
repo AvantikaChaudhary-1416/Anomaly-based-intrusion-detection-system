@@ -346,7 +346,7 @@ async function refreshSummary(){
   } else {
     const max = Math.max(...d.top_ips.map(x => x.count));
     ipList.innerHTML = d.top_ips.map(x => `
-      <div class="ip-row">
+      <div class="ip-row" style="cursor:pointer" onclick="window.location.href='/ip/' + encodeURIComponent('${x.ip}')">
         <div class="ip-addr">${x.ip}</div>
         <div class="ip-bar-track"><div class="ip-bar-fill" style="width:${(x.count/max*100).toFixed(1)}%"></div></div>
         <div class="ip-count">${x.count} events</div>

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>IP Activity — Anomaly Detection Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #05070d;
+    --border: #1b3a66;
+    --border-dashed: #2a5aa0;
+    --blue: #3b82f6;
+    --blue-glow: rgba(59,130,246,.45);
+    --red: #ef4444;
+    --orange: #f5a623;
+    --teal: #2dd4bf;
+    --text: #e6edf7;
+    --text-dim: #7d8aa3;
+    --text-faint: #4b5670;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    background: radial-gradient(circle at 20% -10%, #0a1730 0%, var(--bg) 45%);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    padding: 28px;
+    min-height: 100vh;
+  }
+  .frame{
+    max-width: 1180px;
+    margin: 0 auto;
+    border: 1.5px solid var(--border-dashed);
+    border-style: dashed;
+    border-radius: 10px;
+    padding: 18px;
+    box-shadow: 0 0 40px -12px var(--blue-glow);
+  }
+  .mono{ font-family:'JetBrains Mono', monospace; }
+
+  .back-link{
+    display:inline-flex; align-items:center; gap:6px;
+    font-family:'JetBrains Mono', monospace; font-size: 12px;
+    color: var(--blue); text-decoration:none; opacity:.85;
+    padding: 4px 8px 14px 8px;
+  }
+  .back-link:hover{ opacity:1; }
+
+  .header{ display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding: 4px 8px 8px 8px; }
+  .header h1{ font-size: 24px; font-weight: 700; letter-spacing: .3px; }
+  .risk-badge{
+    font-family:'JetBrains Mono', monospace; font-size: 11px; font-weight:700;
+    padding: 5px 12px; border-radius: 20px; letter-spacing: .5px;
+  }
+  .risk-badge.high{ background: rgba(239,68,68,.14); color: var(--red); border:1px solid rgba(239,68,68,.4); }
+  .risk-badge.medium{ background: rgba(245,166,35,.14); color: var(--orange); border:1px solid rgba(245,166,35,.4); }
+  .risk-badge.low{ background: rgba(45,212,191,.14); color: var(--teal); border:1px solid rgba(45,212,191,.4); }
+  .risk-badge.none{ background: rgba(125,138,163,.14); color: var(--text-dim); border:1px solid rgba(125,138,163,.3); }
+
+  .subtitle{ font-family:'JetBrains Mono', monospace; font-size: 12px; color: var(--text-faint); padding: 0 8px 20px 8px; }
+
+  .stat-row{ display:grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px; }
+  .stat-card{ border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .stat-label{ font-family:'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 1.2px; text-transform:uppercase; color: var(--text-faint); }
+  .stat-value{ font-size: 24px; font-weight:700; margin-top: 8px; }
+  .stat-value.risk-high{ color: var(--red); }
+
+  .two-col{ display:grid; grid-template-columns: 1.3fr 1fr; gap: 14px; margin-bottom: 16px; }
+  @media (max-width: 800px){ .two-col{ grid-template-columns: 1fr; } .stat-row{ grid-template-columns: repeat(2,1fr); } }
+
+  .panel{ border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; }
+  .panel-title{ font-size: 14px; font-weight:600; margin-bottom: 12px; }
+
+  .chart-wrap{ height: 220px; }
+
+  .attack-row{ padding: 8px 0; }
+  .attack-top{ display:flex; justify-content:space-between; font-size: 12.5px; margin-bottom: 5px; }
+  .attack-name{ color: var(--text-dim); }
+  .attack-count{ font-family:'JetBrains Mono', monospace; color: var(--text-dim); }
+  .attack-track{ height:7px; background:#0d1424; border-radius:4px; overflow:hidden; }
+  .attack-fill{ height:100%; border-radius:4px; background: linear-gradient(90deg, var(--blue), #7aa9ff); }
+
+  table{ width:100%; border-collapse: collapse; font-size: 12.5px; }
+  th{
+    text-align:left; font-family:'JetBrains Mono', monospace; font-size:9.5px;
+    color: var(--text-faint); text-transform:uppercase; letter-spacing:1px;
+    padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  td{ padding: 10px 10px; border-bottom: 1px solid #101a2e; color: var(--text-dim); vertical-align: top; }
+  tr:hover td{ color: var(--text); }
+  .badge{ font-family:'JetBrains Mono', monospace; font-size: 10px; font-weight:600; padding: 2px 7px; border-radius: 4px; display:inline-block; white-space:nowrap; }
+  .badge.high{ background: rgba(239,68,68,.14); color: var(--red); }
+  .badge.medium{ background: rgba(245,166,35,.14); color: var(--orange); }
+  .badge.low{ background: rgba(45,212,191,.14); color: var(--teal); }
+  .reason-cell{ color: var(--text-faint); font-size: 11.5px; max-width: 300px; }
+  .empty{ color: var(--text-faint); font-family:'JetBrains Mono', monospace; font-size: 12px; padding: 20px 0; text-align:center; }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <a class="back-link" href="/">&larr; Back to Dashboard</a>
+    <div class="header">
+      <h1>IP Activity — <span class="mono" id="ipHeading">{{ ip }}</span></h1>
+      <span class="risk-badge none" id="riskBadge">NO DATA</span>
+    </div>
+    <div class="subtitle">All FAST and CORROBORATED events where this address appeared as the source IP.</div>
+
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-label">Total Events</div>
+        <div class="stat-value" id="totalEvents">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">First Seen</div>
+        <div class="stat-value mono" id="firstSeen" style="font-size:15px;">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Last Active</div>
+        <div class="stat-value mono" id="lastActive" style="font-size:15px;">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg Severity Score</div>
+        <div class="stat-value" id="avgSeverity">—</div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="panel">
+        <div class="panel-title">Event Timeline</div>
+        <div class="chart-wrap"><canvas id="timelineChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Attack Type Breakdown</div>
+        <div id="attackBreakdown"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Event Log</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Tier</th>
+            <th>Destination IP</th>
+            <th>Attack Type</th>
+            <th>Severity</th>
+            <th>Category</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody id="eventBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+const IP = {{ ip | tojson }};
+let chart = null;
+
+async function fetchJSON(url){
+  const res = await fetch(url);
+  return res.json();
+}
+
+function fmtTs(epoch){
+  if(epoch === null || epoch === undefined) return '—';
+  const d = new Date(epoch * 1000);
+  return d.toISOString().slice(0,16).replace('T', ' ');
+}
+
+function riskFromAvg(avg){
+  if(avg === null || avg === undefined) return {label: 'NO DATA', cls: 'none'};
+  if(avg > 0.8) return {label: 'HIGH RISK', cls: 'high'};
+  if(avg >= 0.6) return {label: 'MEDIUM RISK', cls: 'medium'};
+  return {label: 'LOW RISK', cls: 'low'};
+}
+
+async function load(){
+  const d = await fetchJSON(`/api/ip/${encodeURIComponent(IP)}`);
+
+  document.getElementById('totalEvents').textContent = d.total_events;
+  document.getElementById('firstSeen').textContent = fmtTs(d.first_seen);
+  document.getElementById('lastActive').textContent = fmtTs(d.last_active);
+  document.getElementById('avgSeverity').textContent = d.avg_severity ?? '—';
+
+  const risk = riskFromAvg(d.avg_severity);
+  const badge = document.getElementById('riskBadge');
+  badge.textContent = risk.label;
+  badge.className = 'risk-badge ' + risk.cls;
+
+  const labels = d.timeline.map(x => x.day);
+  const values = d.timeline.map(x => x.count);
+  const ctx = document.getElementById('timelineChart').getContext('2d');
+  if(!chart){
+    chart = new Chart(ctx, {
+      type: 'line',
+      data: { labels: labels, datasets: [{
+        data: values, borderColor: '#2dd4bf', backgroundColor: 'rgba(45,212,191,.12)',
+        pointBackgroundColor: '#2dd4bf', pointBorderColor: '#0a0e1a',
+        pointRadius: 3, borderWidth: 2, fill: true, tension: 0.35,
+      }]},
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#7d8aa3', font: { family:'JetBrains Mono', size: 9 } }, grid: { color: 'rgba(255,255,255,.04)' } },
+          y: { beginAtZero: true, ticks: { color: '#7d8aa3', font: { family:'JetBrains Mono', size: 10 } }, grid: { color: 'rgba(255,255,255,.04)' } }
+        }
+      }
+    });
+  } else {
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = values;
+    chart.update();
+  }
+
+  const breakdownEl = document.getElementById('attackBreakdown');
+  if(!d.attack_breakdown.length){
+    breakdownEl.innerHTML = '<div class="empty">No events recorded.</div>';
+  } else {
+    const max = Math.max(...d.attack_breakdown.map(a => a.count));
+    breakdownEl.innerHTML = d.attack_breakdown.map(a => `
+      <div class="attack-row">
+        <div class="attack-top"><span class="attack-name">${a.attack}</span><span class="attack-count">${a.count} events</span></div>
+        <div class="attack-track"><div class="attack-fill" style="width:${(a.count/max*100).toFixed(1)}%"></div></div>
+      </div>
+    `).join('');
+  }
+
+  const body = document.getElementById('eventBody');
+  if(!d.events.length){
+    body.innerHTML = '<tr><td colspan="7" class="empty">No events recorded for this IP.</td></tr>';
+    return;
+  }
+  body.innerHTML = d.events.map(r => `
+    <tr>
+      <td class="mono">${r.time}</td>
+      <td class="mono">${r.tier || '—'}</td>
+      <td class="mono">${r.dst_ip}</td>
+      <td>${r.attack}</td>
+      <td><span class="badge ${r.bucket}">${r.severity ?? '—'}</span></td>
+      <td class="mono">${r.confidence}</td>
+      <td class="reason-cell">${r.reason || ''}</td>
+    </tr>
+  `).join('');
+}
+
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>

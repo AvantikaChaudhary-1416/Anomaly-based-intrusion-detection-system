@@ -184,6 +184,76 @@ def api_alerts_by_bucket(bucket):
     return jsonify(out)
 
 
+@app.route("/ip/<ip>")
+def ip_details(ip):
+    """Detail page for one source IP's activity."""
+    return render_template("IP_details.html", ip=ip)
+
+
+@app.route("/api/ip/<ip>")
+def api_ip_details(ip):
+    """All events, attack breakdown, and timeline for a single source IP."""
+    df = _load_alerts()
+    df = df[df["src_ip"] == ip]
+
+    if df.empty:
+        return jsonify({
+            "ip": ip,
+            "total_events": 0,
+            "first_seen": None,
+            "last_active": None,
+            "avg_severity": None,
+            "attack_breakdown": [],
+            "timeline": [],
+            "events": [],
+        })
+
+    df["bucket"] = df["severity"].apply(_severity_bucket)
+    df = df.sort_values("alert_time", ascending=False)
+
+    first_seen = float(df["alert_time"].min())
+    last_active = float(df["alert_time"].max())
+    avg_severity = df["severity"].dropna()
+    avg_severity = round(float(avg_severity.mean()), 2) if not avg_severity.empty else None
+
+    attack_counts = df["attack"].value_counts()
+    attack_breakdown = [{"attack": a, "count": int(c)} for a, c in attack_counts.items()]
+
+    # Daily counts over the span this IP actually has data for (capped at 14 days)
+    today = datetime.now().date()
+    span_days = min(14, max(1, (today - datetime.fromtimestamp(first_seen).date()).days + 1))
+    buckets = {today - timedelta(days=i): 0 for i in range(span_days - 1, -1, -1)}
+    for t in df["alert_time"]:
+        d = datetime.fromtimestamp(t).date()
+        if d in buckets:
+            buckets[d] += 1
+    timeline = [{"day": d.strftime("%b %d"), "date": d.isoformat(), "count": c} for d, c in buckets.items()]
+
+    events = []
+    for _, r in df.iterrows():
+        events.append({
+            "time": datetime.fromtimestamp(r["alert_time"]).strftime("%Y-%m-%d %H:%M:%S"),
+            "tier": r["tier"] if pd.notna(r["tier"]) else "—",
+            "dst_ip": r["dst_ip"] if pd.notna(r["dst_ip"]) else "—",
+            "attack": r["attack"],
+            "severity": round(float(r["severity"]), 2) if pd.notna(r["severity"]) else None,
+            "bucket": r["bucket"],
+            "confidence": r["confidence"] if pd.notna(r["confidence"]) else "—",
+            "reason": r["reason"] if pd.notna(r["reason"]) else "",
+        })
+
+    return jsonify({
+        "ip": ip,
+        "total_events": int(len(df)),
+        "first_seen": first_seen,
+        "last_active": last_active,
+        "avg_severity": avg_severity,
+        "attack_breakdown": attack_breakdown,
+        "timeline": timeline,
+        "events": events,
+    })
+
+
 @app.route("/api/summary")
 def summary():
     df = _load_alerts()
