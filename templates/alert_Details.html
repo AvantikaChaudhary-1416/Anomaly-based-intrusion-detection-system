@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ title }} — Anomaly Detection Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #05070d;
+    --panel: #070b14;
+    --border: #1b3a66;
+    --border-dashed: #2a5aa0;
+    --blue: #3b82f6;
+    --blue-glow: rgba(59,130,246,.45);
+    --red: #ef4444;
+    --orange: #f5a623;
+    --teal: #2dd4bf;
+    --text: #e6edf7;
+    --text-dim: #7d8aa3;
+    --text-faint: #4b5670;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    background: radial-gradient(circle at 20% -10%, #0a1730 0%, var(--bg) 45%);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    padding: 28px;
+    min-height: 100vh;
+  }
+  .frame{
+    max-width: 1180px;
+    margin: 0 auto;
+    border: 1.5px solid var(--border-dashed);
+    border-style: dashed;
+    border-radius: 10px;
+    padding: 18px;
+    box-shadow: 0 0 40px -12px var(--blue-glow);
+  }
+  .mono{ font-family:'JetBrains Mono', monospace; }
+
+  .back-link{
+    display:inline-flex; align-items:center; gap:6px;
+    font-family:'JetBrains Mono', monospace; font-size: 12px;
+    color: var(--blue); text-decoration:none; opacity:.85;
+    padding: 4px 8px 14px 8px;
+  }
+  .back-link:hover{ opacity:1; }
+
+  .header{
+    display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap: 12px;
+    padding: 4px 8px 18px 8px;
+  }
+  .header-left{ display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .header h1{ font-size: 26px; font-weight: 700; letter-spacing: .3px; }
+  .count-badge{
+    font-family:'JetBrains Mono', monospace; font-size: 12px; font-weight:700;
+    padding: 5px 12px; border-radius: 20px; letter-spacing: .5px;
+  }
+  body.high .count-badge{ background: rgba(239,68,68,.14); color: var(--red); border:1px solid rgba(239,68,68,.4); }
+  body.medium .count-badge{ background: rgba(245,166,35,.14); color: var(--orange); border:1px solid rgba(245,166,35,.4); }
+  body.low .count-badge{ background: rgba(45,212,191,.14); color: var(--teal); border:1px solid rgba(45,212,191,.4); }
+
+  .subtitle{
+    font-family:'JetBrains Mono', monospace; font-size: 12px;
+    color: var(--text-faint); padding: 0 8px 18px 8px; max-width: 700px;
+  }
+
+  .telemetry{
+    text-align:right;
+    font-family:'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-faint);
+    letter-spacing: .5px;
+  }
+
+  .panel{
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+    background: linear-gradient(180deg, rgba(59,130,246,.03), transparent);
+  }
+
+  table{ width:100%; border-collapse: collapse; font-size: 12.5px; }
+  th{
+    text-align:left; font-family:'JetBrains Mono', monospace; font-size:9.5px;
+    color: var(--text-faint); text-transform:uppercase; letter-spacing:1px;
+    padding: 8px 10px; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td{ padding: 10px 10px; border-bottom: 1px solid #101a2e; color: var(--text-dim); vertical-align: top; }
+  tr:hover td{ color: var(--text); }
+  .badge{
+    font-family:'JetBrains Mono', monospace; font-size: 10px; font-weight:600;
+    padding: 2px 7px; border-radius: 4px; display:inline-block; white-space: nowrap;
+  }
+  body.high .badge{ background: rgba(239,68,68,.14); color: var(--red); }
+  body.medium .badge{ background: rgba(245,166,35,.14); color: var(--orange); }
+  body.low .badge{ background: rgba(45,212,191,.14); color: var(--teal); }
+  .reason-cell{ color: var(--text-faint); font-size: 11.5px; max-width: 340px; }
+  .ip-cell{ font-family:'JetBrains Mono', monospace; }
+  .empty{ color: var(--text-faint); font-family:'JetBrains Mono', monospace; font-size: 12px; padding: 20px 0; text-align:center; }
+</style>
+</head>
+<body class="{{ bucket }}">
+  <div class="frame">
+    <a class="back-link" href="/">&larr; Back to Dashboard</a>
+    <div class="header">
+      <div class="header-left">
+        <h1>{{ title }}</h1>
+        <span class="count-badge mono" id="countBadge">— ALERTS</span>
+      </div>
+      <div class="telemetry">TELEMETRY UPDATE<br><span id="lastRefresh">LAST REFRESH: —</span></div>
+    </div>
+    <div class="subtitle">
+      IDS events from the FAST and CORROBORATED detection tiers, bucketed by severity score
+      ({{ "&gt; 0.8" if bucket == "high" else ("0.6&ndash;0.8" if bucket == "medium" else "&lt; 0.6") | safe }}).
+    </div>
+
+    <div class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Tier</th>
+            <th>Source IP</th>
+            <th>Destination IP</th>
+            <th>Attack Type</th>
+            <th>Severity</th>
+            <th>Category</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody id="alertBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+const BUCKET = "{{ bucket }}";
+
+async function fetchJSON(url){
+  const res = await fetch(url);
+  return res.json();
+}
+
+async function refresh(){
+  const rows = await fetchJSON(`/api/alerts/${BUCKET}`);
+
+  document.getElementById('countBadge').textContent = `${rows.length} ALERT${rows.length === 1 ? '' : 'S'}`;
+  document.getElementById('lastRefresh').textContent =
+    'LAST REFRESH: ' + new Date().toLocaleTimeString();
+
+  const body = document.getElementById('alertBody');
+  if(!rows.length){
+    body.innerHTML = '<tr><td colspan="8" class="empty">No alerts in this severity bucket.</td></tr>';
+    return;
+  }
+
+  body.innerHTML = rows.map(r => `
+    <tr>
+      <td class="mono">${r.time}</td>
+      <td class="mono">${r.tier || '—'}</td>
+      <td class="ip-cell">${r.src_ip}</td>
+      <td class="ip-cell">${r.dst_ip}</td>
+      <td>${r.attack}</td>
+      <td><span class="badge">${r.severity ?? '—'}</span></td>
+      <td class="mono">${r.confidence}</td>
+      <td class="reason-cell">${r.reason || ''}</td>
+    </tr>
+  `).join('');
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

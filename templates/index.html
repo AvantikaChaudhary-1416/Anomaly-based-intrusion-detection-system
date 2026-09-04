@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Anomaly Detection Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #05070d;
+    --panel: #070b14;
+    --border: #1b3a66;
+    --border-dashed: #2a5aa0;
+    --blue: #3b82f6;
+    --blue-glow: rgba(59,130,246,.45);
+    --red: #ef4444;
+    --orange: #f5a623;
+    --teal: #2dd4bf;
+    --text: #e6edf7;
+    --text-dim: #7d8aa3;
+    --text-faint: #4b5670;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    background: radial-gradient(circle at 20% -10%, #0a1730 0%, var(--bg) 45%);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    padding: 28px;
+    min-height: 100vh;
+  }
+  .frame{
+    max-width: 980px;
+    margin: 0 auto;
+    border: 1.5px solid var(--border-dashed);
+    border-style: dashed;
+    border-radius: 10px;
+    padding: 18px;
+    box-shadow: 0 0 40px -12px var(--blue-glow);
+  }
+  .mono{ font-family:'JetBrains Mono', monospace; }
+
+  /* header */
+  .header{
+    display:flex; justify-content:space-between; align-items:flex-start;
+    padding: 4px 8px 18px 8px;
+  }
+  .header .tag{
+    font-family:'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    color: var(--blue);
+    opacity: .55;
+    text-transform: uppercase;
+  }
+  .header h1{
+    font-size: 26px;
+    font-weight: 700;
+    margin-top: 4px;
+    letter-spacing: .3px;
+  }
+  .header-right{ text-align:right; }
+  .status-pill{
+    display:flex; align-items:center; justify-content:flex-end; gap:7px;
+    font-family:'JetBrains Mono', monospace;
+    font-size: 11px; font-weight:600; letter-spacing:1px;
+    color: var(--red);
+  }
+  .status-pill .dot{
+    width:8px; height:8px; border-radius:50%;
+    background: var(--red);
+    box-shadow: 0 0 8px 2px var(--red);
+    animation: pulse 1.4s infinite;
+  }
+  .status-pill.offline{ color: var(--text-faint); }
+  .status-pill.offline .dot{ background: var(--text-faint); box-shadow:none; animation:none; }
+  @keyframes pulse{ 0%,100%{opacity:1;} 50%{opacity:.3;} }
+  .telemetry{
+    margin-top: 8px;
+    font-family:'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-faint);
+    letter-spacing: .5px;
+  }
+
+  /* cards row */
+  .cards{
+    display:grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+    margin-bottom: 16px;
+  }
+  .card{
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+    background: linear-gradient(180deg, rgba(59,130,246,.04), transparent);
+    position: relative;
+  }
+  .card.high{ border-color: rgba(239,68,68,.5); }
+  .card.medium{ border-color: rgba(245,166,35,.5); }
+  .card.low{ border-color: rgba(45,212,191,.5); }
+  .card-top{ display:flex; justify-content:space-between; align-items:flex-start; }
+  .card-label{
+    font-family:'JetBrains Mono', monospace;
+    font-size: 9.5px; letter-spacing: 1.2px; text-transform:uppercase;
+    color: var(--text-faint);
+  }
+  .card-title{ font-size: 14px; font-weight:600; margin-top: 3px; color: var(--text); }
+  .icon{
+    width: 26px; height:26px; border-radius:6px;
+    display:flex; align-items:center; justify-content:center;
+    font-size: 13px;
+  }
+  .icon.high{ background: rgba(239,68,68,.12); color: var(--red); }
+  .icon.medium{ background: rgba(245,166,35,.12); color: var(--orange); }
+  .icon.low{ background: rgba(45,212,191,.12); color: var(--teal); }
+  .card-value{ font-size: 34px; font-weight: 700; margin-top: 14px; }
+  .card-bottom{ display:flex; justify-content:space-between; align-items:center; margin-top: 10px; }
+  .delta{ font-family:'JetBrains Mono', monospace; font-size: 11px; font-weight:600; }
+  .delta.up.high{ color: var(--red); }
+  .delta.up.medium{ color: var(--orange); }
+  .delta.up.low{ color: var(--teal); }
+  .delta.flat{ color: var(--text-faint); }
+  .view-btn{
+    font-family:'JetBrains Mono', monospace;
+    font-size: 10px; color: var(--text-dim);
+    background: #0d1424; border: 1px solid #1e2c47;
+    border-radius: 5px; padding: 5px 9px; cursor:pointer;
+  }
+  .view-btn:hover{ color: var(--text); border-color: var(--blue); }
+
+  /* section panels */
+  .panel{
+    border: 1px solid var(--border-dashed);
+    border-style: dashed;
+    border-radius: 8px;
+    padding: 16px 18px 8px 18px;
+    margin-bottom: 14px;
+  }
+  .panel-head{ display:flex; justify-content:space-between; align-items:flex-end; margin-bottom: 10px;}
+  .panel-tag{
+    font-family:'JetBrains Mono', monospace; font-size: 9.5px;
+    letter-spacing: 1.2px; text-transform:uppercase; color: var(--blue); opacity:.7;
+  }
+  .panel-title{ font-size: 15px; font-weight:600; margin-top: 3px; }
+  .legend{ display:flex; align-items:center; gap:6px; font-family:'JetBrains Mono', monospace; font-size:10px; color:var(--text-dim); }
+  .legend .sw{ width:9px; height:9px; border-radius:2px; background:var(--blue); }
+
+  .chart-wrap{ height: 220px; }
+
+  /* ip bars */
+  .ip-row{ display:flex; align-items:center; gap:14px; padding: 9px 0; }
+  .ip-addr{ width: 130px; font-family:'JetBrains Mono', monospace; font-size:12px; color: var(--text-dim); flex-shrink:0; }
+  .ip-bar-track{ flex:1; height:8px; background:#0d1424; border-radius:4px; overflow:hidden; }
+  .ip-bar-fill{ height:100%; border-radius:4px; background: linear-gradient(90deg, var(--blue), #7aa9ff); box-shadow: 0 0 8px var(--blue-glow); }
+  .ip-count{ width: 80px; text-align:right; font-family:'JetBrains Mono', monospace; font-size:12px; color: var(--text-dim); flex-shrink:0;}
+  .empty{ color: var(--text-faint); font-family:'JetBrains Mono', monospace; font-size: 12px; padding: 14px 0; }
+
+  /* recent table */
+  table{ width:100%; border-collapse: collapse; font-size: 12px; }
+  th{
+    text-align:left; font-family:'JetBrains Mono', monospace; font-size:9.5px;
+    color: var(--text-faint); text-transform:uppercase; letter-spacing:1px;
+    padding: 6px 8px; border-bottom: 1px solid var(--border);
+  }
+  td{ padding: 8px 8px; border-bottom: 1px solid #101a2e; color: var(--text-dim); }
+  tr:hover td{ color: var(--text); }
+  .badge{
+    font-family:'JetBrains Mono', monospace; font-size: 10px; font-weight:600;
+    padding: 2px 7px; border-radius: 4px; display:inline-block;
+  }
+  .badge.high{ background: rgba(239,68,68,.14); color: var(--red); }
+  .badge.medium{ background: rgba(245,166,35,.14); color: var(--orange); }
+  .badge.low{ background: rgba(45,212,191,.14); color: var(--teal); }
+  .reason-cell{ color: var(--text-faint); font-size: 11px; }
+
+  @media (max-width: 720px){
+    .cards{ grid-template-columns: 1fr; }
+    .ip-addr{ width: 92px; }
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <div class="header">
+      <div>
+        <div class="tag">Intrusion Detection System // Local Node</div>
+        <h1>Anomaly Detection Dashboard</h1>
+      </div>
+      <div class="header-right">
+        <div class="status-pill" id="statusPill"><span class="dot"></span><span id="statusText">MONITORING ACTIVE</span></div>
+        <div class="telemetry">TELEMETRY UPDATE<br><span id="lastRefresh">LAST REFRESH: —</span></div>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="card high">
+        <div class="card-top">
+          <div><div class="card-label">Anomaly Alert State</div><div class="card-title">High Severity Alerts</div></div>
+          <div class="icon high">&#9888;</div>
+        </div>
+        <div class="card-value" id="highCount">0</div>
+        <div class="card-bottom">
+          <span class="delta up high" id="highDelta">+0</span>
+          <button class="view-btn" onclick="window.location.href='/alerts/high'">View Details →</button>
+        </div>
+      </div>
+
+      <div class="card medium">
+        <div class="card-top">
+          <div><div class="card-label">Anomaly Alert State</div><div class="card-title">Medium Severity Alerts</div></div>
+          <div class="icon medium">&#9650;</div>
+        </div>
+        <div class="card-value" id="mediumCount">0</div>
+        <div class="card-bottom">
+          <span class="delta up medium" id="mediumDelta">+0</span>
+          <button class="view-btn" onclick="window.location.href='/alerts/medium'">View Details →</button>
+        </div>
+      </div>
+
+      <div class="card low">
+        <div class="card-top">
+          <div><div class="card-label">Anomaly Alert State</div><div class="card-title">Low Severity Alerts</div></div>
+          <div class="icon low">&#9673;</div>
+        </div>
+        <div class="card-value" id="lowCount">0</div>
+        <div class="card-bottom">
+          <span class="delta up low" id="lowDelta">+0</span>
+          <button class="view-btn" onclick="window.location.href='/alerts/low'">View Details →</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-tag">7-Day Threat Matrix Telemetry</div>
+          <div class="panel-title">Anomalies Detected Over Time (Last 7 Days)</div>
+        </div>
+        <div class="legend"><span class="sw"></span>Anomaly Spike Rate</div>
+      </div>
+      <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-tag">IP Address Destination Analysis</div>
+          <div class="panel-title">Top 5 Source IPs by Anomaly Count</div>
+        </div>
+      </div>
+      <div id="ipList"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-tag">Live Feed</div>
+          <div class="panel-title" id="recentTitle">Recent Alerts</div>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Time</th><th>Tier</th><th>Source IP</th><th>Attack</th><th>Severity</th><th>Reason</th></tr>
+        </thead>
+        <tbody id="recentBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+let chart = null;
+let currentFilter = null;
+
+async function fetchJSON(url){
+  const res = await fetch(url);
+  return res.json();
+}
+
+function fmtDelta(n){
+  return (n > 0 ? '+' : '') + n;
+}
+
+async function refreshSummary(){
+  const d = await fetchJSON('/api/summary');
+
+  document.getElementById('highCount').textContent = d.high;
+  document.getElementById('mediumCount').textContent = d.medium;
+  document.getElementById('lowCount').textContent = d.low;
+  document.getElementById('highDelta').textContent = fmtDelta(d.high_delta) + ' /24h';
+  document.getElementById('mediumDelta').textContent = fmtDelta(d.medium_delta) + ' /24h';
+  document.getElementById('lowDelta').textContent = fmtDelta(d.low_delta) + ' /24h';
+
+  const pill = document.getElementById('statusPill');
+  const statusText = document.getElementById('statusText');
+  if(d.monitoring){
+    pill.classList.remove('offline');
+    statusText.textContent = 'MONITORING ACTIVE';
+  } else {
+    pill.classList.add('offline');
+    statusText.textContent = 'NO RECENT ALERTS';
+  }
+
+  document.getElementById('lastRefresh').textContent =
+    'LAST REFRESH: ' + new Date().toLocaleTimeString();
+
+  const labels = d.daily.map(x => x.day);
+  const values = d.daily.map(x => x.count);
+  if(!chart){
+    const ctx = document.getElementById('trendChart').getContext('2d');
+    chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: values,
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59,130,246,.12)',
+          pointBackgroundColor: '#3b82f6',
+          pointBorderColor: '#0a0e1a',
+          pointRadius: 4,
+          borderWidth: 2,
+          fill: true,
+          tension: 0.35,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#7d8aa3', font: { family: 'JetBrains Mono', size: 10 } }, grid: { color: 'rgba(255,255,255,.04)' } },
+          y: { beginAtZero: true, ticks: { color: '#7d8aa3', font: { family: 'JetBrains Mono', size: 10 } }, grid: { color: 'rgba(255,255,255,.04)' } }
+        }
+      }
+    });
+  } else {
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = values;
+    chart.update();
+  }
+
+  const ipList = document.getElementById('ipList');
+  if(!d.top_ips.length){
+    ipList.innerHTML = '<div class="empty">No source IPs recorded yet.</div>';
+  } else {
+    const max = Math.max(...d.top_ips.map(x => x.count));
+    ipList.innerHTML = d.top_ips.map(x => `
+      <div class="ip-row">
+        <div class="ip-addr">${x.ip}</div>
+        <div class="ip-bar-track"><div class="ip-bar-fill" style="width:${(x.count/max*100).toFixed(1)}%"></div></div>
+        <div class="ip-count">${x.count} events</div>
+      </div>
+    `).join('');
+  }
+}
+
+async function refreshRecent(){
+  const rows = await fetchJSON('/api/recent');
+  const filtered = currentFilter ? rows.filter(r => r.bucket === currentFilter) : rows;
+  const title = document.getElementById('recentTitle');
+  title.textContent = currentFilter ? `Recent Alerts — ${currentFilter[0].toUpperCase()+currentFilter.slice(1)} Severity` : 'Recent Alerts';
+
+  const body = document.getElementById('recentBody');
+  if(!filtered.length){
+    body.innerHTML = '<tr><td colspan="6" class="empty">No alerts to show.</td></tr>';
+    return;
+  }
+  body.innerHTML = filtered.map(r => `
+    <tr>
+      <td class="mono">${r.time}</td>
+      <td class="mono">${r.tier || ''}</td>
+      <td class="mono">${r.src_ip}</td>
+      <td>${r.attack}</td>
+      <td><span class="badge ${r.bucket}">${r.severity ?? '—'}</span></td>
+      <td class="reason-cell">${r.reason || ''}</td>
+    </tr>
+  `).join('');
+}
+
+function filterTable(bucket){
+  currentFilter = (currentFilter === bucket) ? null : bucket;
+  refreshRecent();
+}
+
+async function tick(){
+  try{
+    await refreshSummary();
+    await refreshRecent();
+  } catch(e){
+    console.error(e);
+  }
+}
+
+tick();
+setInterval(tick, 5000);
+</script>
+</body>
+</html>
